@@ -406,6 +406,14 @@ class PriorityScheduler(Scheduler):
         already_sorted = False
         return new_blocks, already_sorted
 
+    
+class EqualPriorityScheduler(Scheduler):
+    """
+    A Scheduler that takes a list of targets and schedules them so that
+    all are observed
+    
+    
+    """
 
 
 class Transitioner(object):
