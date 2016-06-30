@@ -19,6 +19,38 @@ __all__ = ['ObservingBlock', 'TransitionBlock', 'Schedule', 'Slot', 'Scheduler',
            'SequentialScheduler', 'PriorityScheduler', 'Transitioner']
 
 
+class GroupedBlock(object):
+    """
+    One or more observations that are connected
+    """
+    def __init__(self, targets, schedule_constraint=consecutive, ordered=False):
+
+
+
+
+        '''
+        A group of observing blocks
+
+        Parameters:
+        -----------
+        targets : list or nested lists of `~astroplan.FixedTarget' objects
+            A list of targets which need to be connected
+        schedule_constraint : 'consecutive', 'night' or 'run'
+            Whether the blocks need to be observed consecutively, on the
+            same night, or sometime during the observing run. This value
+            defaults to 'consecutive'.
+        ordered : bool (optional)
+            Whether the blocks have been input in the order they need to
+            be observed in (only used for consecutive blocks)
+        '''
+    #blocks needs to be better defined
+        self.blocks = blocks
+        self.schedule_constraint = schedule_constraint
+        #need some way of evaluating
+        if self.schedule_constraint = consecutive
+            self.ordered = ordered
+
+
 class ObservingBlock(object):
     """
     An observation to be scheduled, consisting of a target and associated
