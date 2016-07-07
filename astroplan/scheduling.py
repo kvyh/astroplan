@@ -23,32 +23,98 @@ class GroupedBlock(object):
     """
     One or more observations that are connected
     """
-    def __init__(self, targets, schedule_constraint=consecutive, ordered=False):
-
-
-
-
+    def __init__(self, targets, durations, priority, schedule_constraint='consecutive',
+                 ordered=True, configurations=[{}], constraints=[None], transitioner = None):
         '''
         A group of observing blocks
 
         Parameters:
         -----------
-        targets : list or nested lists of `~astroplan.FixedTarget' objects
+        targets : list of `~astroplan.FixedTarget' objects
             A list of targets which need to be connected
-        schedule_constraint : 'consecutive', 'night' or 'run'
-            Whether the blocks need to be observed consecutively, on the
-            same night, or sometime during the observing run. This value
-            defaults to 'consecutive'.
-        ordered : bool (optional)
+        durations: `~astropy.units.Quantity` or
+                   list of `~astropy.units.Quantity`
+            The durations of the observation of each target
+        priority: int
+            The priority of this group of targets
+        schedule_constraint : 'consecutive'
+            Whether the blocks need to be observed consecutively. Currently
+            this is the only option.
+        ordered : bool (not implemented)
             Whether the blocks have been input in the order they need to
             be observed in (only used for consecutive blocks)
+        configurations : dict or list of dicts
+            Configuration metadata
+        constraints : list of `~astroplan.constraints.Constraint` objects or
+                      list of lists of `~astroplan.constraints.Constraint` objects
+            The constraints to apply to these particular targets.  Note
+            that constraints applicable to the entire list should go into the
+            scheduler.
+        transitioner : `~astroplan.scheduling.Transitioner` object
+            the transitioner for the telescope to use to create `TransitionBlocks`
+            between the `ObservingBlocks`
         '''
-    #blocks needs to be better defined
-        self.blocks = blocks
+        self._blocks = None
+        self.duration = None
+        self.targets = targets
         self.schedule_constraint = schedule_constraint
-        #need some way of evaluating
-        if self.schedule_constraint = consecutive
+        self.priority = priority
+        self.durations = durations
+        self.configurations = configurations
+        self.constraints = constraints
+        self.transitioner = transitioner
+        # need some way of evaluating
+        if self.schedule_constraint == 'consecutive':
             self.ordered = ordered
+
+    @property
+    def property_dimensions(self):
+        # parse parameters that can be singles or lists
+        dimensions = []
+        if isinstance(self.durations, list):
+            dimensions.append([n for n in len(self.targets)])
+        else:
+            dimensions.append([0]*len(self.targets))
+            self.durations = [self.durations]
+        if isinstance(self.configurations, list):
+            dimensions.append([n for n in len(self.targets)])
+        else:
+            dimensions.append([0]*len(self.targets))
+            self.configurations = [self.configurations]
+        if isinstance(self.constraints[0], list):
+            dimensions.append([n for n in len(self.targets)])
+        else:
+            dimensions.append([0]*len(self.targets))
+            self.constraints = [self.constraints]
+        return dimensions
+
+    @property
+    def blocks(self):
+        return self._blocks
+
+    @blocks.setter
+    def blocks(self):
+        dims = self.property_dimensions
+        duration = 0*u.second
+        blocks = []
+        for i, target in enumerate(self.targets):
+            b = ObservingBlock(target, self.duration[dims[0][i]], self.priority,
+                               self.configurations[dims[1][i]],
+                               self.constraints[dims[2][i]])
+            if i > 0 and self.ordered:
+                tb = self.transitioner(blocks[-1], b, None, None)
+                blocks.append(tb)
+                duration += tb.duration
+            blocks.append(b)
+            duration += b.duration
+            if not self.ordered:
+                raise NotImplementedError
+        self._blocks = blocks
+        self.duration = duration
+
+    @property
+    def observing_blocks(self):
+        return [block for block in self.blocks if isinstance(block, ObservingBlock)]
 
 
 class ObservingBlock(object):
@@ -570,14 +636,25 @@ class PriorityScheduler(Scheduler):
         _all_times = []
         _block_priorities = np.zeros(len(blocks))
         for i, b in enumerate(blocks):
-            if b.constraints is None:
-                b._all_constraints = self.constraints
+            if isinstance(b, GroupedBlock):
+                for block in b.observing_blocks:
+                    if block.constraints is None:
+                        block._all_constraints = self.constraints
+                    else:
+                        block._all_constraints = self.constraints + block.constraints
+                    block._duration_offsets = u.Quantity([0 * u.second, block.duration / 2, block.duration])
+                    _block_priorities[i] = block.priority
+                    _all_times.append(block.duration)
+                    block.observer = self.observer
             else:
-                b._all_constraints = self.constraints + b.constraints
-            b._duration_offsets = u.Quantity([0 * u.second, b.duration / 2, b.duration])
-            _block_priorities[i] = b.priority
-            _all_times.append(b.duration)
-            b.observer = self.observer
+                if b.constraints is None:
+                    b._all_constraints = self.constraints
+                else:
+                    b._all_constraints = self.constraints + b.constraints
+                b._duration_offsets = u.Quantity([0 * u.second, b.duration / 2, b.duration])
+                _block_priorities[i] = b.priority
+                _all_times.append(b.duration)
+                b.observer = self.observer
 
         # Define a master schedule
         # Generate grid of time slots, and a mask for previous observations
@@ -593,29 +670,69 @@ class PriorityScheduler(Scheduler):
         unscheduled_blocks = []
         # Compute the optimal observation time in priority order
         for i in sorted_indices:
-            b = blocks[i]
+            duration = blocks[i].duration
+            duration_indices = np.int(np.ceil(duration / time_resolution))
+            if isinstance(blocks[i], GroupedBlock):
+                #keep an eye on
+                b = blocks[i].blocks
+                before_time = 0*u.second
+                after_time = duration
+                cut_indices = True
+                for block in b:
+                    # define how much time there is before and after the block
+                    # within the BlockGroup, to allow score offsetting
+                    block.before_time = before_time
+                    before_time = before_time + block.duration
+                    after_time = after_time - block.duration
+                    block.after_time = after_time
+
+            else:
+                b = [blocks[i]]
+                cut_indices = False
             # Compute possible observing times by combining object constraints
             # with the master schedule mask
             # assume all times are good, then multiply by 0 ones that aren't
-            constraint_scores = np.zeros(len(times)) + 1
-            for constraint in b._all_constraints:
-                applied_constraint = constraint(self.observer, [b.target], times=times)
-                applied_score = np.asarray(applied_constraint[0], np.float32)
-                constraint_scores = constraint_scores * applied_score
+            obs = [block for block in b if hasattr(block, 'target')]
+            block_constraint_scores = np.zeros(len(times) - cut_indices) + 1
+            #strides = 0
+            for block in obs:
+                constraint_scores = np.zeros(len(times)) + 1
+                for constraint in block._all_constraints:
+                    applied_constraint = constraint(self.observer, [block.target], times=times)
+                    applied_score = np.asarray(applied_constraint[0], np.float32)
+                    constraint_scores = constraint_scores * applied_score
 
-            # Add up the applied constraints to prioritize the best blocks
-            # And then remove any times that are already scheduled
-            constraint_scores[is_open_time == False] = 0
+                # Add up the applied constraints to prioritize the best blocks
+                # And then remove any times that are already scheduled
+                constraint_scores[is_open_time == False] = 0
+                # remove indices that are too early or too late for that block
+                if cut_indices:
+                    after_indices = np.int(block.after_time / time_resolution)
+                    before_indices = np.int(block.before_time / time_resolution)
+                    cut_idx = after_indices + before_indices
+                    constraint_scores = constraint_scores[before_indices:
+                                                          len(constraint_scores) - after_indices]
+                else:
+                    cut_idx = 0
+                _stride_by = duration_indices - cut_idx + np.int(np.ceil(self.gap_time / time_resolution))
+                block._strided_score = stride_array(constraint_scores, _stride_by)
+                block_constraint_scores *= constraint_scores
+            #options = len(b[0]._strided_score)
+            _strided_scores = b[0]._strided_score
+            for block in obs[1:]:
+                # This is inefficient, but does the job for now
+                np.append(_strided_scores, block._strided_score, axis=1)
+
             # Select the most optimal time
             _is_scheduled = False
             # need to leave time around the Block for transitions
             # TODO: make it so that this isn't required to prevent errors in slot creation
-            total_duration = b.duration + self.gap_time
+#            total_duration = max([block.duration for block in b]) + self.gap_time
             # calculate the number of time slots needed for this exposure
-            _stride_by = np.int(np.ceil(total_duration / time_resolution))
+#            _stride_by = np.int(np.ceil(total_duration / time_resolution))
 
             # Stride the score arrays by that number
-            _strided_scores = stride_array(constraint_scores, _stride_by)
+#            _strided_scores = stride_array(block_constraint_scores, _stride_by)
 
             # Collapse the sub-arrays
             # (run them through scorekeeper again? Just add them?
@@ -637,8 +754,7 @@ class PriorityScheduler(Scheduler):
 
             if _is_scheduled:
                 # set duration such that the Block will fit in the strided array
-                duration_indices = np.int(np.ceil(b.duration / time_resolution))
-                b.duration = duration_indices * time_resolution
+                blocks[i].duration = duration_indices * time_resolution
                 slot_index = [q for q, slot in enumerate(self.schedule.slots)
                               if slot.start < new_start_time < slot.end][0]
                 slots_before = self.schedule.slots[:slot_index]
@@ -647,7 +763,11 @@ class PriorityScheduler(Scheduler):
                 if slots_before:
                     if isinstance(self.schedule.slots[slot_index - 1].block, ObservingBlock):
                         # make a transition object after the previous ObservingBlock
-                        tb = self.transitioner(self.schedule.slots[slot_index - 1].block, b,
+                        print(self.schedule.slots[slot_index - 1].block)
+                        print( b[0])
+                        print(self.schedule.slots[slot_index - 1].end)
+                        print(self.observer)
+                        tb = self.transitioner(self.schedule.slots[slot_index - 1].block, b[0],
                                                self.schedule.slots[slot_index - 1].end, self.observer)
                         times_indices = np.int(np.ceil(tb.duration / time_resolution))
                         tb.duration = times_indices * time_resolution
@@ -665,7 +785,7 @@ class PriorityScheduler(Scheduler):
                         # Remove times from the master time list (copied in later code blocks)
                     elif isinstance(self.schedule.slots[slot_index - 1].block, TransitionBlock):
                         # change the existing TransitionBlock to what it needs to be now
-                        tb = self.transitioner(self.schedule.slots[slot_index - 2].block, b,
+                        tb = self.transitioner(self.schedule.slots[slot_index - 2].block, b[0],
                                                self.schedule.slots[slot_index - 2].end, self.observer)
                         times_indices = np.int(np.ceil(tb.duration / time_resolution))
                         tb.duration = times_indices * time_resolution
@@ -682,7 +802,7 @@ class PriorityScheduler(Scheduler):
                 if slots_after:
                     if isinstance(self.schedule.slots[slot_index + 1].block, ObservingBlock):
                         # make a transition object after the new ObservingBlock
-                        tb = self.transitioner(b, self.schedule.slots[slot_index + 1].block,
+                        tb = self.transitioner(b[-1], self.schedule.slots[slot_index + 1].block,
                                                new_start_time + b.duration, self.observer)
                         times_indices = np.int(np.ceil(tb.duration / time_resolution))
                         tb.duration = times_indices * time_resolution
@@ -692,13 +812,16 @@ class PriorityScheduler(Scheduler):
                         is_open_time[start_idx: end_idx] = False
 
                 # now assign the block itself times and add it to the schedule
-                b.constraints = b._all_constraints
-                b.end_idx = end_time_idx
-                self.schedule.insert_slot(new_start_time, b)
                 is_open_time[start_time_idx: end_time_idx] = False
+                for block in b:
+                    block.constraints = block._all_constraints
+                    # this isn't correct, but it should function properly
+                    block.end_idx = end_time_idx
+                    self.schedule.insert_slot(new_start_time, block)
+                    new_start_time += block.duration
 
             else:
-                print("could not schedule", b.target.name)
+                print("could not schedule", [block.target.name for block in b])
                 unscheduled_blocks.append(b)
                 continue
 
@@ -750,8 +873,18 @@ class Transitioner(object):
             A transition to get from ``oldblock`` to ``newblock`` or `None` if
             no transition is necessary
         """
+        if isinstance(oldblock, GroupedBlock):
+            oldblock = oldblock[-1]
+        if isinstance(newblock, GroupedBlock):
+            newblock = newblock[0]
         components = {}
-        if self.slew_rate is not None:
+        if observer is None and self.slew_rate is not None:
+            # to bypass the requirement of observer/start_time
+            # this returns a result ~30s larger than the following elif
+            sep = oldblock.target.coord.separation(newblock.target.coord)
+
+            components['slew_time'] = sep / self.slew_rate
+        elif self.slew_rate is not None:
             # use the constraints cache for now, but should move that machinery
             # to observer
             from .constraints import _get_altaz
