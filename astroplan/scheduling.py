@@ -19,6 +19,30 @@ __all__ = ['ObservingBlock', 'TransitionBlock', 'Schedule', 'Slot', 'Scheduler',
            'SequentialScheduler', 'PriorityScheduler', 'Transitioner']
 
 
+class BlockGroup(object):
+    """
+    A grouping of `~astroplan/scheduling/ObservingBlock` objects that
+    need to be scheduled together
+    """
+    def __init__(self, observing_blocks, scheduling_constraint = 'consecutive', order = None):
+        """
+
+        Parameters
+        ----------
+        observing_blocks : list of `~astroplan/scheduling/ObservingBlock` objects
+            a list of `~astroplan/scheduling/ObservingBlock` objects that have
+            already been defined.
+
+        scheduling_constraint : string
+            'consecutive' for consecutive blocks, 'night' for blocks in the same
+            night, and 'run' for requiring the others to be in the same schedule
+
+        order : list
+            list giving the order of the observing blocks (only applicable for
+            consecutive blocks) (e.g. [1,0,2,3] where block 0 is first)
+        """
+
+
 class ObservingBlock(object):
     """
     An observation to be scheduled, consisting of a target and associated
