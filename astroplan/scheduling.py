@@ -19,14 +19,13 @@ __all__ = ['ObservingBlock', 'TransitionBlock', 'Schedule', 'Slot', 'Scheduler',
            'SequentialScheduler', 'PriorityScheduler', 'Transitioner']
 
 
-class BlockGroup(object):
+class GroupBlocks(object):
     """
-    A grouping of `~astroplan/scheduling/ObservingBlock` objects that
+    Groups together multiple`~astroplan/scheduling/ObservingBlock` objects that
     need to be scheduled together
     """
-    def __init__(self, observing_blocks, scheduling_constraint = 'consecutive', order = None):
+    def __call__(self, observing_blocks, scheduling_constraint='consecutive', order = None):
         """
-
         Parameters
         ----------
         observing_blocks : list of `~astroplan/scheduling/ObservingBlock` objects
@@ -41,6 +40,16 @@ class BlockGroup(object):
             list giving the order of the observing blocks (only applicable for
             consecutive blocks) (e.g. [1,0,2,3] where block 0 is first)
         """
+        self.blocks = observing_blocks
+        if scheduling_constraint == 'consecutive' and order:
+            blocks = sorted(self.blocks, key=order)
+
+        elif scheduling_constraint == 'consecutive':
+            pass
+        elif scheduling_constraint == 'night':
+            pass
+        elif scheduling_constraint == 'run':
+            pass
 
 
 class ObservingBlock(object):
@@ -220,7 +229,7 @@ class Schedule(object):
 
     @property
     def open_slots(self):
-        return [slot for slot in self.slots if not slot.occupied]
+        return [slot for slot in self.slots if not slot.block]
 
     def new_slots(self, slot_index, start_time, end_time):
         # this is intended to be used such that there aren't consecutive unoccupied slots
@@ -253,15 +262,16 @@ class Schedule(object):
             end_time = start_time + block.duration
         if isinstance(block, ObservingBlock):
             # TODO: make it shift observing/transition blocks to fill small amounts of open space
-            block.end_time = start_time+block.duration
+            scheduled_block = copy.copy(block)
+            scheduled_block.end_time = start_time+block.duration
         earlier_slots = self.slots[:slot_index]
         later_slots = self.slots[slot_index+1:]
-        block.start_time = start_time
+        scheduled_block.start_time = start_time
         new_slots = self.new_slots(slot_index, start_time, end_time)
         for new_slot in new_slots:
             if new_slot.middle:
-                new_slot.occupied = True
-                new_slot.block = block
+                new_slot.block = scheduled_block
+                new_slot._original_block = block
         self.slots = earlier_slots + new_slots + later_slots
         return earlier_slots + new_slots + later_slots
 
@@ -299,9 +309,17 @@ class Slot(object):
         """
         self.start = start_time
         self.end = end_time
-        self.occupied = False
         self.middle = False
         self.block = False
+
+    def __repr__(self):
+        output = 'schedule slot from ' + str(self.start.iso) + ' to ' + \
+              str(self.end.iso)
+        if isinstance(self.block, ObservingBlock):
+            output += ' containing an observing block'
+        elif isinstance(self.block, TransitionBlock):
+            output += ' containing a transition block'
+        return output
 
     @property
     def duration(self):
@@ -309,7 +327,7 @@ class Slot(object):
         
     def split_slot(self, early_time, later_time):
         # check if the new slot would overwrite occupied/other slots
-        if self.occupied:
+        if self.block:
             raise ValueError('slot is already occupied')
             
         new_slot = Slot(early_time, later_time)
@@ -339,9 +357,9 @@ class Scheduler(object):
         Parameters
         ----------
         blocks : list of `~astroplan.scheduling.ObservingBlock` objects
-            The observing blocks to schedule.  Note that the input
-            `~astroplan.scheduling.ObservingBlock` objects will *not* be
-            modified - new ones will be created and returned.
+            The observing blocks to schedule.  The input
+            `~astroplan.scheduling.ObservingBlock` objects will be
+            used but not modified - new ones will be created inside the schedule.
 
         Returns
         -------
@@ -353,24 +371,22 @@ class Scheduler(object):
         """
 
         # these are *shallow* copies
-        copied_blocks = [copy.copy(block) for block in blocks]
-        schedule = self._make_schedule(copied_blocks)
+        schedule = self._make_schedule(blocks)
         return schedule
 
     @abstractmethod
     def _make_schedule(self, blocks):
         """
         Does the actual business of scheduling. The ``blocks`` passed in should
-        have their ``start_time` and `end_time`` modified to reflect the
-        schedule. Any necessary `~astroplan.scheduling.TransitionBlock` should
-        also be added.  Then the full set of blocks should be returned as a list
-        of blocks, along with a boolean indicating whether or not they have been
-        put in order already.
+        be entered into ``slots`` in the schedule if they can be. Any necessary
+        `~astroplan.scheduling.TransitionBlock` should  also be added. Then the
+        schedule should be returned.
 
         Parameters
         ----------
         blocks : list of `~astroplan.scheduling.ObservingBlock` objects
-            Can be modified as it is already copied by ``__call__``
+            Modified as little as possible, but used as references where
+            copies cannot.
          Returns
         -------
         schedule : `~astroplan.scheduling.Schedule`
@@ -446,7 +462,6 @@ class SequentialScheduler(Scheduler):
                 b._all_constraints = self.constraints + b.constraints
             b._duration_offsets = u.Quantity([0*u.second, b.duration/2,
                                               b.duration])
-            b.observer = self.observer
         current_time = self.start_time
         while (len(blocks) > 0) and (current_time < self.end_time):
             # first compute the value of all the constraints for each block
@@ -487,12 +502,10 @@ class SequentialScheduler(Scheduler):
 
                 # now assign the block itself times and add it to the schedule
                 newb = blocks.pop(bestblock_idx)
-                newb.start_time = current_time
-                current_time += newb.duration
-                newb.end_time = current_time
                 newb.constraints_value = block_constraint_results[bestblock_idx]
 
-                self.schedule.insert_slot(newb.start_time, newb)
+                self.schedule.insert_slot(current_time, newb)
+                current_time += newb.duration
 
         return self.schedule
 
@@ -572,7 +585,6 @@ class PriorityScheduler(Scheduler):
             b._duration_offsets = u.Quantity([0 * u.second, b.duration / 2, b.duration])
             _block_priorities[i] = b.priority
             _all_times.append(b.duration)
-            b.observer = self.observer
 
         # Define a master schedule
         # Generate grid of time slots, and a mask for previous observations
@@ -696,6 +708,119 @@ class PriorityScheduler(Scheduler):
                 print("could not schedule", b.target.name)
                 unscheduled_blocks.append(b)
                 continue
+
+        return self.schedule
+
+
+class GroupedSequentialScheduler(Scheduler):
+    """
+    A scheduler that does iterative sequential scheduling.  That is, it
+    looks at all the blocks, picks the best one, schedules it, and then
+    moves on, it does this with different ``SchedulingConstraint`` weights
+    and compares the results.
+    """
+
+    @u.quantity_input(gap_time=u.second)
+    def __init__(self, start_time, end_time, constraints, observer,
+                 transitioner=None, gap_time=30 * u.min):
+        """
+        Parameters
+        ----------
+        start_time : `~astropy.time.Time`
+            the start of the observation scheduling window.
+        end_time : `~astropy.time.Time`
+            the end of the observation scheduling window.
+        constraints : sequence of `~astroplan.constraints.Constraint` objects
+            The constraints to apply to *every* observing block.  Note that
+            constraints for specific blocks can go on each block individually.
+        observer : `~astroplan.Observer`
+            The observer/site to do the scheduling for.
+        transitioner : `~astroplan.scheduling.Transitioner` or None
+            The object to use for computing transition times between blocks
+        gap_time : `~astropy.units.Quantity` with time units
+            The minimal spacing to try over a gap where nothing can be scheduled.
+        """
+        self.constraints = constraints
+        self.start_time = start_time
+        self.end_time = end_time
+        self.observer = observer
+        self.transitioner = transitioner
+        self.gap_time = gap_time
+        # make a schedule object, when apply_constraints works, add constraints
+        self.schedule = Schedule(self.start_time, self.end_time,
+                                 # constraints=self.constraints
+                                 )
+
+    @classmethod
+    @u.quantity_input(duration=u.second)
+    def from_timespan(cls, center_time, duration, **kwargs):
+        """
+        Create a new instance of this class given a center time and duration.
+
+        Parameters
+        ----------
+        center_time : `~astropy.time.Time`
+            Mid-point of time-span to schedule.
+
+        duration : `~astropy.units.Quantity` or `~astropy.time.TimeDelta`
+            Duration of time-span to schedule
+        """
+        start_time = center_time - duration / 2.
+        end_time = center_time + duration / 2.
+        return cls(start_time, end_time, **kwargs)
+
+    def _make_schedule(self, blocks):
+        for b in blocks:
+            if b.constraints is None:
+                b._all_constraints = self.constraints
+            else:
+                b._all_constraints = self.constraints + b.constraints
+            b._duration_offsets = u.Quantity([0 * u.second, b.duration / 2,
+                                              b.duration])
+        current_time = self.start_time
+        while (len(blocks) > 0) and (current_time < self.end_time):
+            # first compute the value of all the constraints for each block
+            # given the current starting time
+            block_transitions = []
+            block_constraint_results = []
+            for b in blocks:
+                # first figure out the transition
+                if len(self.schedule.observing_blocks) > 0:
+                    trans = self.transitioner(self.schedule.observing_blocks[-1], b, current_time,
+                                              self.observer)
+                else:
+                    trans = None
+                block_transitions.append(trans)
+                transition_time = 0 * u.second if trans is None else trans.duration
+
+                times = current_time + transition_time + b._duration_offsets
+
+                constraint_res = []
+                for constraint in b._all_constraints:
+                    constraint_res.append(constraint(self.observer, [b.target],
+                                                     times))
+                # take the product over all the constraints *and* times
+                block_constraint_results.append(np.prod(constraint_res))
+
+            # now identify the block that's the best
+            bestblock_idx = np.argmax(block_constraint_results)
+
+            if block_constraint_results[bestblock_idx] == 0.:
+                # if even the best is unobservable, we need a gap
+                current_time += self.gap_time
+            else:
+                # If there's a best one that's observable, first get its transition
+                trans = block_transitions.pop(bestblock_idx)
+                if trans is not None:
+                    self.schedule.insert_slot(trans.start_time, trans)
+                    current_time += trans.duration
+
+                # now assign the block itself times and add it to the schedule
+                newb = blocks.pop(bestblock_idx)
+                newb.constraints_value = block_constraint_results[bestblock_idx]
+
+                self.schedule.insert_slot(current_time, newb)
+                current_time += newb.duration
 
         return self.schedule
 
