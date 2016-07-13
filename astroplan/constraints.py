@@ -28,7 +28,8 @@ __all__ = ["AltitudeConstraint", "AirmassConstraint", "AtNightConstraint",
            "is_observable", "is_always_observable", "time_grid_from_range",
            "SunSeparationConstraint", "MoonSeparationConstraint",
            "MoonIlluminationConstraint", "LocalTimeConstraint", "Constraint",
-           "observability_table", "months_observable"]
+           "observability_table", "months_observable", "ScheduleConstraint",
+           "TransitionConstraint", "SchedulingConstraint"]
 
 
 def _get_altaz(times, observer, targets,
@@ -525,6 +526,162 @@ class LocalTimeConstraint(Constraint):
                     (t.datetime.time() <= max_time) for t in times]
 
         return mask
+
+
+@abstractmethod
+class ScheduleConstraint(object):
+    """
+    Constraints related to scheduling
+    """
+    __metaclass__ = ABCMeta
+    # TODO: see if there is some way of making this a ``Constraint`` class
+    # TODO: make the docstring correct
+
+    def __call__(self, observer, targets, transitioner, schedule,
+                 in_progress=False, times=None, time_range=None,
+                 time_grid_resolution=0.5*u.hour):
+        """
+        Compute the constraint for this class
+
+        Parameters
+        ----------
+        observer : `~astroplan.Observer`
+            The observaton location from which to apply the constraints
+        targets : sequence of `~astroplan.Target`
+            The targets on which to apply the constraints.
+        transitioner : `astroplan.scheduling.Transitioner` object
+            The transitioner that allows computation of transition block
+            durations.
+        schedule : `astroplan.scheduling.Schedule` object
+            The schedule within which the constraint is being evaluated
+        times : `~astropy.time.Time`
+            The times to compute the constraint.
+            WHAT HAPPENS WHEN BOTH TIMES AND TIME_RANGE ARE SET?
+        time_range : `~astropy.time.Time` (length = 2)
+            Lower and upper bounds on time sequence.
+        time_grid_resolution : `~astropy.units.quantity`
+            Time-grid spacing
+
+        Returns
+        -------
+        constraint_result : 2D array of float or bool
+            The constraints, with targets along the first index and times along
+            the second.
+        """
+
+        if times is None and time_range is not None:
+            times = time_grid_from_range(time_range,
+                                         time_resolution=time_grid_resolution)
+        elif not isinstance(times, Time):
+            times = Time(times)
+
+        if times.isscalar:
+            times = Time([times])
+
+        if hasattr(targets, '__len__'):
+            targets = [FixedTarget(coord=target) if isinstance(target, SkyCoord)
+                       else target for target in targets]
+        else:
+            if isinstance(targets, SkyCoord):
+                targets = FixedTarget(coord=targets)
+        if in_progress:
+            return self.compute_constraint(start_time, observer, block, transitioner, schedule)
+        else:
+            return self.compute_final_constraint(start_time, observer, block, transitioner, schedule)
+
+    @abstractmethod
+    def compute_constraint(self, start_time, observer, block, transitioner, schedule):
+        """
+        Actually do the real work of computing the constraint.  Subclasses
+        override this.
+
+        Parameters
+        ----------
+        start_time : `~astropy.time.Time`
+            The proposed start time of the block the constraint applies to
+        observer : `~astroplan.Observer`
+            the observaton location from which to apply the constraints
+        block : `~astroplan.scheduling.ObservingBlock`
+            The block on which the constraints apply.
+        transitioner : `astroplan.scheduling.Transitioner` object
+            The transitioner that allows computation of transition block
+            durations.
+        schedule : `astroplan.scheduling.Schedule` object
+            The schedule within which the constraint is being evaluated
+
+        Returns
+        -------
+        constraint_result : 2D array of float or bool
+            The constraints, with targets along the first index and times along
+            the second.
+        """
+        # Should be implemented on each subclass of Constraint
+        raise NotImplementedError
+
+    def compute_final_constraint(self, start_time, observer, block, transitioner, schedule):
+        """
+        exactly as above, but computed with the assumption that it is on a final schedule
+        """
+        raise NotImplementedError
+
+
+class TransitionConstraint(ScheduleConstraint):
+    """
+    constrains the length of transitions
+    """
+    def __init__(self, max_duration=float('inf')*u.seconds, min_duration=None, boolean=False):
+        """
+        Parameters
+        ----------
+        max_duration : `~astropy.units.Quantity`
+            The maximum duration allowed for a transition
+        min_duration : `~astropy.units.Quantity`
+            The minimum duration cared about, any duration less than this
+            will be treated as "perfect" (only useful for non-boolean)
+        boolean : bool
+            whether the output is boolean (less than max duration = 1,
+            otherwise = 0) or non-boolean (scaled between min and max)
+        """
+        self.max = max_duration
+        self.min = min_duration
+        self.boolean_constraint = boolean
+
+    def compute_constraint(self, start_time, observer, block, transitioner, schedule):
+        """"""
+        # TODO: write .which_slot and .previous inside Schedule
+        # TODO: make it more discerning of whether it really needs to calculate the duration
+        # TODO: make it add small open-spaces to
+        index, slot = schedule.which_slot(start_time)
+        previous_block = schedule.previous_ob(index)
+        next_block = schedule.next_ob(index)
+        durations = []
+        if previous_block:
+            if start_time - previous_block.end_time > block.duration + 2*max_duration:
+                pass
+            else:
+                # the start_time can be used because small changes in start barely effect durations
+                duration = transitioner(previous_block, block, start_time, observer).duration
+                durations.append(duration)
+        if next_block:
+            if next_block.start_time - start_time > 2* block.duration + 2*max_duration:
+                pass
+            else:
+                duration = transitioner(block, next_block, start_time, observer).duration
+                durations.append(duration)
+        if self.boolean_constraint:
+            if all([duration < max_duration for duration in durations]):
+                return True
+        else:
+            rescaled = 1 - _rescale_minmax(durations, self.min, self.max)
+            return np.average(rescaled)
+
+    def compute_final_constraint(self, start_time, observer, block, transitioner, schedule):
+        # this could just look at the durations of the scheduled transition blocks?
+        return self.compute_constraint(self, start_time, observer, block, transitioner, schedule)
+
+
+class SchedulingConstraint(ScheduleConstraint):
+    raise NotImplementedError
 
 
 def is_always_observable(constraints, observer, targets, times=None,
