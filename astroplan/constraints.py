@@ -585,12 +585,12 @@ class ScheduleConstraint(object):
             if isinstance(targets, SkyCoord):
                 targets = FixedTarget(coord=targets)
         if in_progress:
-            return self.compute_constraint(start_time, observer, block, transitioner, schedule)
+            return self.compute_constraint(times, observer, block, transitioner, schedule)
         else:
-            return self.compute_final_constraint(start_time, observer, block, transitioner, schedule)
+            return self.compute_final_constraint(times, observer, block, transitioner, schedule)
 
     @abstractmethod
-    def compute_constraint(self, start_time, observer, block, transitioner, schedule):
+    def compute_constraint(self, times, observer, block, transitioner, schedule):
         """
         Actually do the real work of computing the constraint.  Subclasses
         override this.
@@ -618,7 +618,7 @@ class ScheduleConstraint(object):
         # Should be implemented on each subclass of Constraint
         raise NotImplementedError
 
-    def compute_final_constraint(self, start_time, observer, block, transitioner, schedule):
+    def compute_final_constraint(self, times, observer, block, transitioner, schedule):
         """
         exactly as above, but computed with the assumption that it is on a final schedule
         """
@@ -629,7 +629,7 @@ class TransitionConstraint(ScheduleConstraint):
     """
     constrains the length of transitions
     """
-    def __init__(self, max_duration=float('inf')*u.seconds, min_duration=None, boolean=False):
+    def __init__(self, max_duration=float('inf')*u.second, min_duration=None, boolean=False):
         """
         Parameters
         ----------
@@ -646,7 +646,7 @@ class TransitionConstraint(ScheduleConstraint):
         self.min = min_duration
         self.boolean_constraint = boolean
 
-    def compute_constraint(self, start_time, observer, block, transitioner, schedule):
+    def compute_constraint(self, times, observer, block, transitioner, schedule):
         """"""
         # TODO: write .which_slot and .previous inside Schedule
         # TODO: make it more discerning of whether it really needs to calculate the duration
@@ -663,7 +663,7 @@ class TransitionConstraint(ScheduleConstraint):
                 duration = transitioner(previous_block, block, start_time, observer).duration
                 durations.append(duration)
         if next_block:
-            if next_block.start_time - start_time > 2* block.duration + 2*max_duration:
+            if next_block.start_time - start_time > 2 * block.duration + 2*max_duration:
                 pass
             else:
                 duration = transitioner(block, next_block, start_time, observer).duration
@@ -681,7 +681,40 @@ class TransitionConstraint(ScheduleConstraint):
 
 
 class SchedulingConstraint(ScheduleConstraint):
-    raise NotImplementedError
+    """
+    Constrains the ordering and spacing of Blocks
+    """
+    def __init__(self):
+        pass
+
+    def compute_constraint(self, times, observer, block, transitioner, schedule):
+        #index, slot = schedule.which_slot(start_time)
+        #previous_block = schedule.previous_ob(index)
+        #next_block = schedule.next_ob(index)
+
+        if hasattr(block, consecutive):
+            consecutive_mask = np.zeros(len(times))
+            if any(isinstance(constraint, TransitionConstraint)
+                   for constraint in block.constraints):
+                spacing = min(block.constraints[TransitionConstraint].max, 30*u.min)
+            else:
+                spacing = 30*u.min
+            starts = [slot.start for slot in schedule.slots if
+                      slot._original_block in block.consecutive]
+            ends = [slot.end for slot in schedule.slots if
+                    slot._original_block in block.consecutive]
+            consecutive_times = starts + ends
+            for time in consecutive_times:
+                consecutive_mask += (np.abs(times - time) <= spacing + block.duration)
+
+        if hasattr(block, night):
+
+        if hasattr(block, run):
+            gah
+        raise NotImplementedError
+
+    def compute_final_constraint(self, times, observer, block, transitioner, schedule):
+        raise NotImplementedError
 
 
 def is_always_observable(constraints, observer, targets, times=None,
