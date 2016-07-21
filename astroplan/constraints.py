@@ -618,7 +618,7 @@ class ScheduleConstraint(object):
         # Should be implemented on each subclass of Constraint
         raise NotImplementedError
 
-    def compute_final_constraint(self, times, observer, block, transitioner, schedule):
+    def compute_final_constraint(self, start_time, observer, block, transitioner, schedule):
         """
         exactly as above, but computed with the assumption that it is on a final schedule
         """
@@ -648,6 +648,7 @@ class TransitionConstraint(ScheduleConstraint):
 
     def compute_constraint(self, times, observer, block, transitioner, schedule):
         """"""
+        # TODO: rewrite to use times
         # TODO: write .which_slot and .previous inside Schedule
         # TODO: make it more discerning of whether it really needs to calculate the duration
         # TODO: make it add small open-spaces to
@@ -691,9 +692,8 @@ class SchedulingConstraint(ScheduleConstraint):
         #index, slot = schedule.which_slot(start_time)
         #previous_block = schedule.previous_ob(index)
         #next_block = schedule.next_ob(index)
-
-        if hasattr(block, consecutive):
-            consecutive_mask = np.zeros(len(times))
+        if hasattr(block, 'consecutive'):
+            # TODO: make this also test if there is enough space for the other blocks
             if any(isinstance(constraint, TransitionConstraint)
                    for constraint in block.constraints):
                 spacing = min(block.constraints[TransitionConstraint].max, 30*u.min)
@@ -701,20 +701,70 @@ class SchedulingConstraint(ScheduleConstraint):
                 spacing = 30*u.min
             starts = [slot.start for slot in schedule.slots if
                       slot._original_block in block.consecutive]
-            ends = [slot.end for slot in schedule.slots if
-                    slot._original_block in block.consecutive]
-            consecutive_times = starts + ends
-            for time in consecutive_times:
-                consecutive_mask += (np.abs(times - time) <= spacing + block.duration)
+            if len(starts) == 0:
+                # TODO: make a "is there enough space?" mask
+                consecutive_mask = None
+            else:
+                ends = [slot.end for slot in schedule.slots if
+                        slot._original_block in block.consecutive]
+                consecutive_times = starts + ends
+                consecutive_mask = np.zeros(len(times))
+                for time in consecutive_times:
+                    consecutive_mask += (np.abs(times - time) <= spacing + block.duration)
+        else:
+            consecutive_mask = None
 
-        if hasattr(block, night):
+        if hasattr(block, 'same_night'):
+            first_noon = observer.noon(times[0], which='next')
+            starts = [slot.start for slot in schedule.slots if
+                      slot._original_block in block.same_night]
+            if len(starts) == 0:
+                night_mask = None
+            else:
+                day = np.floor(starts[0] - first_noon)
+                days = np.floor(times - first_noon)
+                night_mask = days == day
+        else:
+            night_mask = None
+        if hasattr(block, 'same_run'):
+            # TODO: make this look at if there is time left for the others rather than current
+            scheduled = [1 for slot in schedule.slots if
+                         slot._original_block in block.same_run]
+            fraction_scheduled = len(scheduled)/len(block.same_run)
+            run_mask = np.ones(len(times))
+        else:
+            run_mask = None
 
-        if hasattr(block, run):
-            gah
-        raise NotImplementedError
+        if consecutive_mask and night_mask and run_mask:
+            # night and run masks are boolean, scaling on consecutive may be unnecessary here
+            return 100*consecutive_mask*night_mask*run_mask
+        elif consecutive_mask and night_mask:
+            return 100*consecutive_mask*night_mask
+        elif consecutive_mask and run_mask:
+            return 100*consecutive_mask*run_mask
+        elif night_mask and run_mask:
+            return night_mask*run_mask
+        elif consecutive_mask:
+            return 100*consecutive_mask
+        elif night_mask:
+            return night_mask
+        elif run_mask:
+            return run_mask
+        else:
+            return np.ones(len(times))
 
-    def compute_final_constraint(self, times, observer, block, transitioner, schedule):
-        raise NotImplementedError
+    def compute_final_constraint(self, start_time, observer, block, transitioner, schedule):
+        score = self.compute_constraint([start_time], observer, block, transitioner, schedule)
+        consecutives = [slot.start for slot in schedule.slots if
+                        slot._original_block in block.consecutive]
+        consecutive = len(consecutives) == len(block.consecutive)
+        nightly = [slot.start for slot in schedule.slots if
+                   slot._original_block in block.same_night]
+        night = len(nightly) == len(block.same_night)
+        allrun = [slot.start for slot in schedule.slots if
+                   slot._original_block in block.same_run]
+        run = len(allrun) == len(block.same_run)
+        return score*consecutive*night*run
 
 
 def is_always_observable(constraints, observer, targets, times=None,
