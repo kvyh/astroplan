@@ -28,8 +28,8 @@ __all__ = ["AltitudeConstraint", "AirmassConstraint", "AtNightConstraint",
            "is_observable", "is_always_observable", "time_grid_from_range",
            "SunSeparationConstraint", "MoonSeparationConstraint",
            "MoonIlluminationConstraint", "LocalTimeConstraint", "Constraint",
-           "observability_table", "months_observable", "ScheduleConstraint",
-           "TransitionConstraint", "SchedulingConstraint"]
+           "ScheduleConstraint", "TransitionConstraint", "SchedulingConstraint",
+           "observability_table", "months_observable"]
 
 
 def _get_altaz(times, observer, targets,
