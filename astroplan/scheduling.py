@@ -123,21 +123,6 @@ class ObservingBlock(object):
         ob.readout_time = readout_time
         return ob
 
-    def generate_score(self, start_time, transition_time=None, schedule_weights=None,
-                       observer=None, schedule=None):
-        # TODO: finish writing this
-        if observer:
-            self.observer = observer
-        times = start_time + self._duration_offsets
-        scores = []
-        for constraint in self._all_constraints:
-            if isinstance(constraint, ScheduleConstraint):
-                scores.append(constraint())
-            else:
-                scores.append(constraint(self.observer, [b.target], times))
-        block_score = np.prod(scores)
-        return block_score
-
 
 class TransitionBlock(object):
     """
@@ -343,6 +328,7 @@ class Slot(object):
         return self.end - self.start
         
     def split_slot(self, early_time, later_time):
+        # early_time and later_time should be inside the slot
         # check if the new slot would overwrite occupied/other slots
         if self.block:
             raise ValueError('slot is already occupied')
