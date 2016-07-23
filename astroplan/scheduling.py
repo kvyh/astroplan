@@ -12,46 +12,54 @@ from abc import ABCMeta, abstractmethod
 import numpy as np
 
 from astropy import units as u
-from astroplan.constraints import (ScheduleConstraint, TransitionConstraint,
-                                   SchedulingConstraint)
 
 from .utils import time_grid_from_range, stride_array
 
 __all__ = ['ObservingBlock', 'TransitionBlock', 'Schedule', 'Slot', 'Scheduler',
+           'group_blocks',
            'SequentialScheduler', 'PriorityScheduler', 'Transitioner']
 
 
-class GroupBlocks(object):
+def group_blocks(observing_blocks, scheduling_constraint='consecutive', order=None):
     """
     Groups together multiple`~astroplan/scheduling/ObservingBlock` objects that
     need to be scheduled together
+
+    Parameters
+    ----------
+    observing_blocks : list of `~astroplan/scheduling/ObservingBlock` objects
+        a list of `~astroplan/scheduling/ObservingBlock` objects that have
+        already been defined. This modifies the blocks, if you want to keep
+        non-grouped versions import copy and make a new list with ungrouped =
+        [copy.copy(block) for block in blocks]
+
+    scheduling_constraint : string
+        'consecutive' for consecutive blocks, 'same_night' for blocks in the same
+        night, and 'same_run' for requiring them all be scheduled in the same run
+
+    order : list
+        list giving the order of the observing blocks (only applicable for
+        consecutive blocks) (e.g. [1,0,2,3] where block 0 is first)
     """
-    def __call__(self, observing_blocks, scheduling_constraint='consecutive', order = None):
-        """
-        Parameters
-        ----------
-        observing_blocks : list of `~astroplan/scheduling/ObservingBlock` objects
-            a list of `~astroplan/scheduling/ObservingBlock` objects that have
-            already been defined.
-
-        scheduling_constraint : string
-            'consecutive' for consecutive blocks, 'night' for blocks in the same
-            night, and 'run' for requiring the others to be in the same schedule
-
-        order : list
-            list giving the order of the observing blocks (only applicable for
-            consecutive blocks) (e.g. [1,0,2,3] where block 0 is first)
-        """
-        self.blocks = observing_blocks
-        if scheduling_constraint == 'consecutive' and order:
-            blocks = sorted(self.blocks, key=order)
-
-        elif scheduling_constraint == 'consecutive':
-            pass
-        elif scheduling_constraint == 'night':
-            pass
-        elif scheduling_constraint == 'run':
-            pass
+    blocks = observing_blocks
+    # currently this overwrites any existing groups of that type a block is already in
+    # this means the other blocks still care about it being scheduled, but it will not
+    # care about them
+    if scheduling_constraint == 'consecutive' and order:
+        blocks = sorted(blocks, key=lambda x: order[blocks.index(x)])
+        for i, block in enumerate(blocks):
+            block.blocks_before = blocks[:i]
+            block.blocks_after = blocks[i + 1:]
+            block.consecutive = block.blocks_before + block.blocks_after
+    elif scheduling_constraint == 'consecutive':
+        for i, block in enumerate(blocks):
+            block.consecutive = blocks[:i]+blocks[i + 1:]
+    elif scheduling_constraint == 'same_night':
+        for i, block in enumerate(blocks):
+            block.same_night = blocks[:i] + blocks[i + 1:]
+    elif scheduling_constraint == 'same_run':
+        for i, block in enumerate(blocks):
+            block.same_run = blocks[:i] + blocks[i + 1:]
 
 
 class ObservingBlock(object):
@@ -250,7 +258,7 @@ class Schedule(object):
             raise ValueError('longer block than slot')
         elif self.slots[slot_index].end - block.duration < start_time:
             start_time = self.slots[slot_index].end - block.duration
-
+        #can all of these be elifs?
         if np.abs((self.slots[slot_index].duration - block.duration) < 1 * u.second):
             block.duration = self.slots[slot_index].duration
             start_time = self.slots[slot_index].start
@@ -266,6 +274,8 @@ class Schedule(object):
             # TODO: make it shift observing/transition blocks to fill small amounts of open space
             scheduled_block = copy.copy(block)
             scheduled_block.end_time = start_time+block.duration
+        else:
+            scheduled_block = block
         earlier_slots = self.slots[:slot_index]
         later_slots = self.slots[slot_index+1:]
         scheduled_block.start_time = start_time
@@ -313,6 +323,7 @@ class Slot(object):
         self.end = end_time
         self.middle = False
         self.block = False
+        self._original_block = None
 
     def __repr__(self):
         output = 'schedule slot from ' + str(self.start.iso) + ' to ' + \
