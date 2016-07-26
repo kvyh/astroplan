@@ -24,6 +24,24 @@ mdm = Observer.at_site('mdm')
 targets = [vega, rigel, polaris]
 
 
+def test_observing_block():
+    block = ObservingBlock(rigel, 1*u.minute, 0, configuration={'filter': 'b'})
+    assert(block.configuration['filter'] == 'b')
+    assert(block.target == rigel)
+    times_per_exposure = [1*u.minute, 4*u.minute, 15*u.minute, 5*u.minute]
+    numbers_of_exposures = [100, 4, 3, 12]
+    readout_time = 0.5*u.minute
+    for index in len(times_per_exposure):
+        block = ObservingBlock.from_exposures(vega, 0, times_per_exposure[index],
+                                              numbers_of_exposures[index], readout_time)
+        assert(block.duration == numbers_of_exposures[index] *
+               (times_per_exposure[index] + readout_time))
+
+
+def test_group_blocks():
+    
+
+
 def test_transitioner():
     blocks = [ObservingBlock(t, 55 * u.minute, i) for i, t in enumerate(targets)]
     slew_rate = 1 * u.deg / u.second
