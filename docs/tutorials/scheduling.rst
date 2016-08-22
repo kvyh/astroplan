@@ -123,11 +123,11 @@ be from 2AM to 8AM, so we use `~astroplan.constraints.TimeConstraint`.
     >>> for priority, bandpass in enumerate(['B', 'G', 'R']):
     ...     # We want each filter to have separate priority (so that target
     ...     # and reference are both scheduled)
-    ...     b = ObservingBlock.from_exposures(deneb, priority, deneb_exp, n, read_out,
+    ...     b = ObservingBlock.from_exposures(deneb, deneb_exp, n, read_out, priority,
     ...                                         configuration = {'filter': bandpass},
     ...                                         constraints = [first_half_night])
     ...     blocks.append(b)
-    ...     b = ObservingBlock.from_exposures(m13, priority, m13_exp, n, read_out,
+    ...     b = ObservingBlock.from_exposures(m13, m13_exp, n, read_out, priority,
     ...                                         configuration = {'filter': bandpass},
     ...                                         constraints = [first_half_night])
     ...     blocks.append(b)
@@ -269,11 +269,11 @@ targets.
     for priority, bandpass in enumerate(['B', 'G', 'R']):
         # We want each filter to have separate priority (so that target
         # and reference are both scheduled)
-        b = ObservingBlock.from_exposures(deneb, priority, deneb_exp, n, read_out,
+        b = ObservingBlock.from_exposures(deneb, deneb_exp, n, read_out, priority,
                                             configuration = {'filter': bandpass},
                                             constraints = [first_half_night])
         blocks.append(b)
-        b = ObservingBlock.from_exposures(m13, priority, m13_exp, n, read_out,
+        b = ObservingBlock.from_exposures(m13, m13_exp, n, read_out, priority,
                                             configuration = {'filter': bandpass},
                                             constraints = [first_half_night])
         blocks.append(b)
@@ -350,11 +350,11 @@ and run the priority scheduler again.
     for priority, bandpass in enumerate(['B', 'G', 'R']):
         # We want each filter to have separate priority (so that target
         # and reference are both scheduled)
-        b = ObservingBlock.from_exposures(deneb, priority, deneb_exp, n, read_out,
+        b = ObservingBlock.from_exposures(deneb, deneb_exp, n, read_out, priority,
                                             configuration = {'filter': bandpass},
                                             constraints = [first_half_night])
         blocks.append(b)
-        b = ObservingBlock.from_exposures(m13, priority, m13_exp, n, read_out,
+        b = ObservingBlock.from_exposures(m13, m13_exp, n, read_out, priority,
                                             configuration = {'filter': bandpass},
                                             constraints = [first_half_night])
         blocks.append(b)

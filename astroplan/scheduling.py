@@ -27,7 +27,7 @@ class ObservingBlock(object):
     constraints on observations.
     """
     @u.quantity_input(duration=u.second)
-    def __init__(self, target, duration, priority, configuration={}, constraints=None):
+    def __init__(self, target, duration, priority=1, configuration={}, constraints=[]):
         """
         Parameters
         ----------
@@ -38,8 +38,8 @@ class ObservingBlock(object):
             exposure time
 
         priority: integer or float
-            priority of this object in the target list. 1 is highest priority,
-            no maximum
+            priority of this object in the target list. lower values
+            are higher priority. default is one
 
         configuration : dict
             Configuration metadata
@@ -80,9 +80,9 @@ class ObservingBlock(object):
                     for constraint in self.constraints}
 
     @classmethod
-    def from_exposures(cls, target, priority, time_per_exposure,
-                       number_exposures, readout_time=0 * u.second,
-                       configuration={}, constraints=None):
+    def from_exposures(cls, target, time_per_exposure, number_exposures,
+                       readout_time=0 * u.second, priority=1,
+                       configuration={}, constraints=[]):
         duration = number_exposures * (time_per_exposure + readout_time)
         ob = cls(target, duration, priority, configuration, constraints)
         ob.time_per_exposure = time_per_exposure
@@ -133,23 +133,34 @@ class Scorer(object):
         end = self.schedule.end_time
         times = time_grid_from_range((start, end), time_resolution)
         score_array = np.ones((len(self.blocks), len(times)))
+        # TODO: make sure local constraints override global constraints
+        local_constraints = []
         for i, block in enumerate(self.blocks):
-            # TODO: change the default constraints from None to []
-            if block.constraints:
-                for constraint in block.constraints:
-                    applied_score = constraint(self.observer, [block.target],
-                                               times=times)[0]
-                    score_array[i] *= applied_score
+            local_constraints.append([])
+            # schedulers put global constraints into ._all_constraints
+            # so we can use .constraints for the local constraints
+            for constraint in block.constraints:
+                local_constraints[i].append(constraint.__class__.__name__)
+                applied_score = constraint(self.observer, [block.target],
+                                           times=times)[0]
+                score_array[i] *= applied_score
         targets = [block.target for block in self.blocks]
         for constraint in self.global_constraints:
-            score_array *= constraint(self.observer, targets, times)
+            skip_global = []
+            for i, block in enumerate(local_constraints):
+                if constraint.__class__.__name__ in block:
+                    skip_global.append(i)
+            global_score = constraint(self.observer, targets, times)
+            for i, score in enumerate(global_score):
+                if i not in skip_global:
+                    score_array[i] *= score
         return score_array
 
     @classmethod
     def from_start_end(cls, blocks, observer, start_time, end_time,
                        global_constraints=[]):
         """
-        for if you don't have a schedule/ aren't inside a scheduler
+        if you don't have a schedule
         """
         dummy_schedule = Schedule(start_time, end_time)
         sc = cls(blocks, observer, dummy_schedule, global_constraints)
@@ -521,8 +532,10 @@ class SequentialScheduler(Scheduler):
             # to make sure the scheduler has some constraint to work off of
             # and to prevent scheduling of targets below the horizon
             if b._all_constraints is None:
+                b.constraints = [AltitudeConstraint(min=0*u.deg)]
                 b._all_constraints = [AltitudeConstraint(min=0*u.deg)]
             elif not any(isinstance(c, AltitudeConstraint) for c in b._all_constraints):
+                b.constraints.append(AltitudeConstraint(min=0*u.deg))
                 b._all_constraints.append(AltitudeConstraint(min=0*u.deg))
             b._duration_offsets = u.Quantity([0*u.second, b.duration/2,
                                               b.duration])
@@ -603,8 +616,10 @@ class PriorityScheduler(Scheduler):
             # to make sure the scheduler has some constraint to work off of
             # and to prevent scheduling of targets below the horizon
             if b._all_constraints is None:
+                b.constraints = [AltitudeConstraint(min=0*u.deg)]
                 b._all_constraints = [AltitudeConstraint(min=0*u.deg)]
             elif not any(isinstance(c, AltitudeConstraint) for c in b._all_constraints):
+                b.constraints.append(AltitudeConstraint(min=0*u.deg))
                 b._all_constraints.append(AltitudeConstraint(min=0*u.deg))
             b._duration_offsets = u.Quantity([0 * u.second, b.duration / 2, b.duration])
             _block_priorities[i] = b.priority
